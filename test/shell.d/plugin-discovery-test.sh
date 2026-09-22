@@ -32,15 +32,21 @@ write_manifest() {
 
 for dir in "$user_dir" "$bundled" "$data_first" "$data_second"; do
   write_manifest "$dir/personal" "acme.personal"
+  write_manifest "$dir/omacom-personal" "omacom.personal"
   write_manifest "$dir/builtin" "omarchy.test-auth"
 done
 for dir in "$bundled" "$data_first" "$data_second"; do
   write_manifest "$dir/checkout" "acme.checkout"
+  write_manifest "$dir/omacom-checkout" "omacom.checkout"
 done
 for dir in "$data_first" "$data_second"; do
   write_manifest "$dir/ordered" "acme.ordered"
+  write_manifest "$dir/omacom-ordered" "omacom.ordered"
 done
 write_manifest "$data_second/last" "acme.last"
+write_manifest "$data_second/omacom-last" "omacom.last"
+write_manifest "$user_dir/omacom-home-only" "omacom.home-only"
+write_manifest "$data_first/omacom-prefix" "omacomish.untrusted"
 write_manifest "$data_first/category/grouped" "acme.grouped"
 write_manifest "$data_first/widgets" "acme.adjacent"
 mv "$data_first/widgets/manifest.json" "$data_first/widgets/Widget.manifest.json"
@@ -54,6 +60,10 @@ write_manifest "$user_dir/invalid" "acme.fallback"
 jq '.entryPoints.barWidget = "../Widget.qml"' "$user_dir/invalid/manifest.json" >"$TMPDIR/invalid.json"
 mv "$TMPDIR/invalid.json" "$user_dir/invalid/manifest.json"
 write_manifest "$bundled/fallback" "acme.fallback"
+write_manifest "$user_dir/omacom-invalid" "omacom.fallback"
+jq '.schemaVersion = 2' "$user_dir/omacom-invalid/manifest.json" >"$TMPDIR/invalid.json"
+mv "$TMPDIR/invalid.json" "$user_dir/omacom-invalid/manifest.json"
+write_manifest "$bundled/omacom-fallback" "omacom.fallback"
 mkdir -p "$user_dir/bad-json"
 printf '{' >"$user_dir/bad-json/manifest.json"
 
@@ -67,7 +77,14 @@ jq -n --arg user "$user_dir" --arg bundled "$bundled" --arg first "$data_first" 
   "acme.adjacent": {sourceDir: ($first + "/widgets"), firstParty: false},
   "acme.linked": {sourceDir: ($user + "/linked"), firstParty: false},
   "acme.fallback": {sourceDir: ($bundled + "/fallback"), firstParty: false},
-  "omarchy.test-auth": {sourceDir: ($bundled + "/builtin"), firstParty: true}
+  "omarchy.test-auth": {sourceDir: ($bundled + "/builtin"), firstParty: true},
+  "omacom.personal": {sourceDir: ($user + "/omacom-personal"), firstParty: false},
+  "omacom.checkout": {sourceDir: ($bundled + "/omacom-checkout"), firstParty: true},
+  "omacom.ordered": {sourceDir: ($first + "/omacom-ordered"), firstParty: true},
+  "omacom.last": {sourceDir: ($second + "/omacom-last"), firstParty: true},
+  "omacom.home-only": {sourceDir: ($user + "/omacom-home-only"), firstParty: false},
+  "omacom.fallback": {sourceDir: ($bundled + "/omacom-fallback"), firstParty: true},
+  "omacomish.untrusted": {sourceDir: ($first + "/omacom-prefix"), firstParty: false}
 }' >"$expected"
 
 (cd "$TMPDIR" && "$ROOT/bin/omarchy-plugin-catalog") >"$TMPDIR/catalog.json"
@@ -103,6 +120,6 @@ for _ in {1..100}; do
   sleep 0.1
 done
 [[ -s $TMPDIR/runtime.json ]] || fail "runtime plugin discovery completes" "$(cat "$TMPDIR/quickshell.log")"
-jq -e --slurpfile expected "$expected" '.plugins == $expected[0] and .untrustedCapabilities == [] and .trustedCapabilities == ["authentication"]' "$TMPDIR/runtime.json" >/dev/null ||
-  fail "runtime matches catalog discovery without granting external capabilities" "$(cat "$TMPDIR/runtime.json")"
-pass "runtime matches catalog discovery without granting external capabilities"
+jq -e --slurpfile expected "$expected" '.plugins == $expected[0] and .capabilities == ($expected[0] | map_values(if .firstParty then ["authentication"] else [] end))' "$TMPDIR/runtime.json" >/dev/null ||
+  fail "runtime matches catalog discovery and grants capabilities only to trusted origins" "$(cat "$TMPDIR/runtime.json")"
+pass "runtime matches catalog discovery and grants capabilities only to trusted origins"

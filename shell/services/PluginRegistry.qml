@@ -575,8 +575,7 @@ QtObject {
   // (repeating for every manifest found)
   function parseScanOutput(text) {
     var lines = String(text || "").split("\n")
-    var firstParty = {}
-    var thirdParty = {}
+    var selected = {}
     var currentSource = null
     var currentKind = null
     var currentJson = []
@@ -587,11 +586,18 @@ QtObject {
       try {
         var manifest = JSON.parse(raw)
         manifest.__sourceDir = currentSource
-        manifest.__isFirstParty = currentKind === "firstparty" && String(manifest.id).indexOf("omarchy.") === 0
+        var reserved = String(manifest.id).indexOf("omarchy.") === 0
+        var omacom = String(manifest.id).indexOf("omacom.") === 0
+        manifest.__isFirstParty = (currentKind === "firstparty" && reserved)
+          || (omacom && (currentKind === "firstparty" || currentKind === "data"))
         var validated = validateManifest(manifest, currentSource + "/manifest.json")
         if (validated) {
-          var target = validated.__isFirstParty ? firstParty : thirdParty
-          if (!Object.prototype.hasOwnProperty.call(target, validated.id)) target[validated.id] = validated
+          if (reserved && currentKind !== "firstparty") {
+            console.warn("PluginRegistry: plugin " + validated.id
+              + " rejected: id is reserved for first-party Omarchy plugins")
+          } else if (!Object.prototype.hasOwnProperty.call(selected, validated.id)) {
+            selected[validated.id] = validated
+          }
         }
       } catch (e) {
         console.warn("PluginRegistry: bad manifest at " + currentSource + ": " + e)
@@ -619,23 +625,17 @@ QtObject {
     }
     flush()
 
+    // Select by search order before assigning capabilities so an untrusted
+    // personal override cannot inherit the packaged copy's trust.
+    var firstParty = {}
+    var thirdParty = {}
+    for (var id in selected) {
+      var target = selected[id].__isFirstParty ? firstParty : thirdParty
+      target[id] = selected[id]
+    }
     stampHostCapabilities(firstParty, thirdParty)
 
-    var merged = {}
-    for (var fk in firstParty) merged[fk] = firstParty[fk]
-    // Third-party plugins never shadow first-party ids. The whole
-    // `omarchy.*` namespace is reserved for built-ins, including bar widgets
-    // registered outside the manifest-based plugin registry.
-    for (var tk in thirdParty) {
-      if (firstParty[tk] || String(tk).indexOf("omarchy.") === 0) {
-        console.warn("PluginRegistry: plugin " + tk
-          + " rejected: id is reserved for first-party Omarchy plugins")
-        continue
-      }
-      merged[tk] = thirdParty[tk]
-    }
-
-    installedPlugins = merged
+    installedPlugins = selected
     registryRevision++
     scanning = false
     pluginsChanged()
@@ -690,7 +690,7 @@ QtObject {
     if (scanning) return
     scanning = true
     // Personal plugins precede bundled plugins, then XDG data roots in order.
-    // Only the bundled root can supply trusted omarchy.* manifests.
+    // Origin distinguishes reserved built-ins and trusted omacom.* packages.
     var script = ""
       + "emit_manifest() { local kind=\"$1\"; local manifest=\"$2\"; local sub; "
       + "  if [[ ${manifest##*/} == \"manifest.json\" ]]; then sub=\"${manifest%/manifest.json}\"; else sub=\"$(dirname -- \"$manifest\")\"; fi; "
@@ -707,7 +707,7 @@ QtObject {
       + "IFS=: read -r -a data_dirs <<<\"${2:-/usr/local/share:/usr/share}\"; "
       + "for dir in \"${data_dirs[@]}\"; do "
       + "  [[ $dir == /* ]] || continue; "
-      + "  scan_root \"${dir%/}/omarchy/shell/plugins\" thirdparty 3; "
+      + "  scan_root \"${dir%/}/omarchy/shell/plugins\" data 3; "
       + "done"
     scanProcess.command = ["bash", "-c", script, registry.firstPartyDir, registry.pluginsDir, Quickshell.env("XDG_DATA_DIRS")]
     scanProcess.running = true

@@ -274,6 +274,7 @@ ShellRoot {
   }
 
   property var _services: ({})
+  property var _serviceProvenance: ({})
   property var _pluginShellApis: ({})
   property var _pluginShellApiDescriptors: ({})
   property var _pluginBarEntryShellApis: ({})
@@ -887,6 +888,14 @@ ShellRoot {
         && manifest.__hostCapabilities.indexOf("authentication") !== -1)
   }
 
+  function serviceProvenance(manifest) {
+    return JSON.stringify([
+      pluginRegistry.entryPointUrl(manifest, "service"),
+      manifest.__isFirstParty === true,
+      shell.isAuthenticationService(manifest, manifest.id)
+    ])
+  }
+
   function ensureService(pluginId) {
     var key = String(pluginId)
     if (_services[key]) return _services[key]
@@ -899,9 +908,13 @@ ShellRoot {
     if (!url) return null
     var authenticationService = shell.isAuthenticationService(manifest, key)
     if (authenticationService && AuthServiceStore.has(key)) return null
+    var provenance = shell.serviceProvenance(manifest)
 
     var comp = Qt.createComponent(url, Component.PreferSynchronous)
     function finalize() {
+      var current = pluginRegistry.installedPlugins[key]
+      if (!current || shell.serviceProvenance(current) !== provenance) return
+      if (_services[key] || AuthServiceStore.has(key)) return
       if (comp.status !== Component.Ready) {
         console.warn("service plugin load failed for " + key + ": " + comp.errorString())
         return
@@ -914,6 +927,7 @@ ShellRoot {
         console.warn("service plugin createObject returned null for", key)
         return
       }
+      _serviceProvenance[key] = provenance
       if ("omarchyPath" in inst) inst.omarchyPath = shell.omarchyPath
       if ("shell" in inst) inst.shell = shell.pluginShellFor(manifest)
       if ("manifest" in inst) inst.manifest = shell.publicPluginManifest(manifest)
@@ -949,10 +963,11 @@ ShellRoot {
       if (!m.entryPoints || !m.entryPoints.service) continue
       if (!pluginRegistry.isEnabled(id)) continue
       var authenticationService = shell.isAuthenticationService(m, id)
+      var provenance = shell.serviceProvenance(m)
       if (_services[id]) {
-        if (authenticationService) {
-          // A service that gains a trusted authentication capability must move
-          // out of the host's public service map before it is recreated.
+        if (authenticationService || _serviceProvenance[id] !== provenance) {
+          // A kept object must never receive a replacement plugin's trust.
+          delete _serviceProvenance[id]
           var published = _services[id]
           if (published && typeof published.destroy === "function") published.destroy()
           var withoutPublished = ({})
@@ -968,13 +983,13 @@ ShellRoot {
         }
       }
       if (AuthServiceStore.has(id)) {
-        if (authenticationService) {
+        if (authenticationService && _serviceProvenance[id] === provenance) {
           AuthServiceStore.updateManifest(id, shell.publicPluginManifest(m))
           continue
         }
-        // A service that loses its trusted authentication capability can move
-        // back to the ordinary service map only after the isolated copy dies.
+        // Isolated services also belong to the source and trust that created them.
         AuthServiceStore.destroy(id)
+        delete _serviceProvenance[id]
       }
       ensureService(id)
     }
@@ -992,6 +1007,7 @@ ShellRoot {
       var next = ({})
       for (var k in _services) if (k !== existingId) next[k] = _services[k]
       _services = next
+      delete _serviceProvenance[existingId]
     }
     // Authentication services are retained outside the root object graph, so
     // reconcile their disable/remove lifecycle separately from _services.
@@ -1007,6 +1023,7 @@ ShellRoot {
       if (stillAuthenticationService && pluginRegistry.isEnabled(authenticationId)
           && shell.isAuthenticationService(authenticationManifest, authenticationId)) continue
       AuthServiceStore.destroy(authenticationId)
+      delete _serviceProvenance[authenticationId]
     }
   }
 
@@ -1028,13 +1045,16 @@ ShellRoot {
       }
       var inst = _services[existingId]
       if (inst && typeof inst.destroy === "function") inst.destroy()
+      delete _serviceProvenance[existingId]
     }
     _services = next
     var authenticationIds = AuthServiceStore.ids()
     for (var ai = 0; ai < authenticationIds.length; ai++) {
       var authenticationId = authenticationIds[ai]
-      if (!serviceKeepLoaded(authenticationId))
+      if (!serviceKeepLoaded(authenticationId)) {
         AuthServiceStore.destroy(authenticationId)
+        delete _serviceProvenance[authenticationId]
+      }
     }
   }
 

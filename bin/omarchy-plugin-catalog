@@ -5,29 +5,29 @@
 # omarchy:hidden=true
 
 # The runtime registry uses the same root order and manifest validation.
-# Only bundled omarchy.* manifests belong to the trusted first-party namespace.
+# Trusted namespaces are classified by the scan origin, never a path prefix.
 
 set -o pipefail
 
 paths=()
-bundled_sources=()
+origins=()
 
 scan_root() {
-  local dir="$1" depth="$2" bundled="$3" manifest
+  local dir="$1" depth="$2" origin="$3" manifest
   [[ -d $dir ]] || return 0
   while IFS= read -r -d '' manifest; do
     paths+=("$manifest")
-    bundled_sources+=("$bundled")
+    origins+=("$origin")
   done < <(find -L "$dir" -mindepth 2 -maxdepth "$depth" -type f \( -name manifest.json -o -name '*.manifest.json' \) \
     ! -path "$dir/.*/*" -print0 2>/dev/null | sort -z)
 }
 
-scan_root "$HOME/.config/omarchy/plugins" 2 false
-scan_root "$OMARCHY_PATH/shell/plugins" 3 true
+scan_root "$HOME/.config/omarchy/plugins" 2 home
+scan_root "$OMARCHY_PATH/shell/plugins" 3 bundled
 IFS=: read -r -a data_dirs <<<"${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 for data_dir in "${data_dirs[@]}"; do
   [[ $data_dir == /* ]] || continue
-  scan_root "${data_dir%/}/omarchy/shell/plugins" 3 false
+  scan_root "${data_dir%/}/omarchy/shell/plugins" 3 data
 done
 
 if (( ${#paths[@]} == 0 )); then
@@ -37,7 +37,7 @@ fi
 
 manifest_args=()
 for index in "${!paths[@]}"; do
-  manifest_args+=(--rawfile "manifest$index" "${paths[$index]}" --argjson "bundled$index" "${bundled_sources[$index]}")
+  manifest_args+=(--rawfile "manifest$index" "${paths[$index]}" --arg "origin$index" "${origins[$index]}")
 done
 
 jq -n "${manifest_args[@]}" --args '
@@ -56,8 +56,9 @@ jq -n "${manifest_args[@]}" --args '
     | (try ($ARGS.named["manifest\($i)"] | fromjson | select(valid)) catch empty) as $manifest
     | ($manifest.id | tostring) as $id
     | ($id | startswith("omarchy.")) as $reserved
-    | ($reserved and $ARGS.named["bundled\($i)"]) as $firstParty
-    | select(($reserved | not) or $firstParty)
+    | $ARGS.named["origin\($i)"] as $origin
+    | select(($reserved | not) or $origin == "bundled")
+    | (($reserved and $origin == "bundled") or (($id | startswith("omacom.")) and ($origin == "bundled" or $origin == "data"))) as $firstParty
     | ($manifestPath | sub("/manifest.json$"; "") | sub("/[^/]+\\.manifest\\.json$"; "")) as $sourceDir
     | {
         id: $id,

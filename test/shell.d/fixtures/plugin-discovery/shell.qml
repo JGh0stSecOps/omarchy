@@ -7,17 +7,15 @@ ShellRoot {
 
   function writeResult() {
     var plugins = {}
-    var untrustedCapabilities = []
+    var capabilities = {}
     for (var id in registry.installedPlugins) {
       var manifest = registry.installedPlugins[id]
       plugins[id] = { sourceDir: manifest.__sourceDir, firstParty: manifest.__isFirstParty }
-      if (!manifest.__isFirstParty)
-        untrustedCapabilities = untrustedCapabilities.concat(manifest.__hostCapabilities)
+      capabilities[id] = manifest.__hostCapabilities
     }
     var payload = JSON.stringify({
       plugins: plugins,
-      untrustedCapabilities: untrustedCapabilities,
-      trustedCapabilities: registry.installedPlugins["omarchy.test-auth"].__hostCapabilities
+      capabilities: capabilities
     })
     Quickshell.execDetached(["bash", "-c", "printf '%s' \"$1\" > \"$2\"", "plugin-discovery", payload, Quickshell.env("OMARCHY_QML_TEST_RESULT")])
   }
