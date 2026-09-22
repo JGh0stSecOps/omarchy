@@ -587,11 +587,11 @@ QtObject {
       try {
         var manifest = JSON.parse(raw)
         manifest.__sourceDir = currentSource
-        manifest.__isFirstParty = (currentKind === "firstparty")
+        manifest.__isFirstParty = currentKind === "firstparty" && String(manifest.id).indexOf("omarchy.") === 0
         var validated = validateManifest(manifest, currentSource + "/manifest.json")
         if (validated) {
-          if (currentKind === "firstparty") firstParty[validated.id] = validated
-          else thirdParty[validated.id] = validated
+          var target = validated.__isFirstParty ? firstParty : thirdParty
+          if (!Object.prototype.hasOwnProperty.call(target, validated.id)) target[validated.id] = validated
         }
       } catch (e) {
         console.warn("PluginRegistry: bad manifest at " + currentSource + ": " + e)
@@ -689,13 +689,8 @@ QtObject {
   function rescan() {
     if (scanning) return
     scanning = true
-    // $0 = first-party dir, $1 = third-party dir. Some bash versions need the explicit -- separator.
-    // First-party plugins may be grouped one level deeper, e.g. panels/audio
-    // or services/battery.
-    // First-party bar widgets can also carry sibling manifests such as
-    // widgets/Clock.manifest.json so multiple widgets can live in one source
-    // directory without wrapper folders.
-    // Third-party plugins stay at the top level of ~/.config/omarchy/plugins.
+    // Personal plugins precede bundled plugins, then XDG data roots in order.
+    // Only the bundled root can supply trusted omarchy.* manifests.
     var script = ""
       + "emit_manifest() { local kind=\"$1\"; local manifest=\"$2\"; local sub; "
       + "  if [[ ${manifest##*/} == \"manifest.json\" ]]; then sub=\"${manifest%/manifest.json}\"; else sub=\"$(dirname -- \"$manifest\")\"; fi; "
@@ -703,20 +698,18 @@ QtObject {
       + "  cat \"$manifest\"; "
       + "  printf '\\n=== EOM ===\\n'; "
       + "}; "
-      + "scan_firstparty() { local dir=\"$1\"; "
-      + "  [[ -d \"$dir\" ]] || return 0; "
-      + "  while IFS= read -r manifest; do emit_manifest firstparty \"$manifest\"; done < <(find \"$dir\" -mindepth 2 -maxdepth 3 -type f \\( -name manifest.json -o -name '*.manifest.json' \\) | sort); "
+      + "scan_root() { local dir=\"$1\" kind=\"$2\" depth=\"$3\" manifest; "
+      + "  [[ -d $dir ]] || return 0; "
+      + "  while IFS= read -r -d '' manifest; do emit_manifest \"$kind\" \"$manifest\"; done < <(find -L \"$dir\" -mindepth 2 -maxdepth \"$depth\" -type f \\( -name manifest.json -o -name '*.manifest.json' \\) ! -path \"$dir/.*/*\" -print0 2>/dev/null | sort -z); "
       + "}; "
-      + "scan_thirdparty() { local dir=\"$1\"; "
-      + "  [[ -d \"$dir\" ]] || return 0; "
-      + "  for sub in \"$dir\"/*/; do "
-      + "    [[ -f \"$sub/manifest.json\" ]] || continue; "
-      + "    emit_manifest thirdparty \"$sub/manifest.json\"; "
-      + "  done; "
-      + "}; "
-      + "scan_firstparty \"$0\"; "
-      + "scan_thirdparty \"$1\""
-    scanProcess.command = ["bash", "-c", script, registry.firstPartyDir, registry.pluginsDir]
+      + "scan_root \"$1\" thirdparty 2; "
+      + "scan_root \"$0\" firstparty 3; "
+      + "IFS=: read -r -a data_dirs <<<\"${2:-/usr/local/share:/usr/share}\"; "
+      + "for dir in \"${data_dirs[@]}\"; do "
+      + "  [[ $dir == /* ]] || continue; "
+      + "  scan_root \"${dir%/}/omarchy/shell/plugins\" thirdparty 3; "
+      + "done"
+    scanProcess.command = ["bash", "-c", script, registry.firstPartyDir, registry.pluginsDir, Quickshell.env("XDG_DATA_DIRS")]
     scanProcess.running = true
   }
 

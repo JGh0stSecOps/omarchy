@@ -55,6 +55,12 @@ A third-party replacement bar can render registered widget components, but widge
 
 Full schema: [`shell/services/PluginRegistry.qml`](../shell/services/PluginRegistry.qml).
 
+## Plugin discovery
+
+The shell and CLI catalog discover plugins in this order: `$HOME/.config/omarchy/plugins`, `$OMARCHY_PATH/shell/plugins`, then `omarchy/shell/plugins` under each absolute directory in `$XDG_DATA_DIRS`, from left to right. An unset or empty `$XDG_DATA_DIRS` defaults to `/usr/local/share:/usr/share`; empty and relative entries are ignored. The first valid manifest for an external plugin ID wins, so personal plugins override checkout plugins, and checkout plugins override packaged copies. Personal plugins live one directory below their root; bundled and data-directory plugins can also use one category directory or adjacent `*.manifest.json` widget manifests.
+
+The `omarchy.*` namespace remains reserved for trusted built-ins from `$OMARCHY_PATH`. Plugins discovered through home or XDG data directories cannot claim that namespace or grant themselves host capabilities. Other IDs remain third-party plugins even when bundled in `$OMARCHY_PATH`. Installing a package does not enable its plugins; rescan with `omarchy-shell shell rescanPlugins` and enable or place the desired plugin normally.
+
 ## Installing a third-party plugin
 
 A plugin is a **git repo** with a `manifest.json` at its root. Adding one
