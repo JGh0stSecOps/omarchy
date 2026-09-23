@@ -279,6 +279,7 @@ ShellRoot {
   property var _pluginShellApiDescriptors: ({})
   property var _pluginBarEntryShellApis: ({})
   property var _pluginRegistryApis: ({})
+  property var _pluginRegistryApiSources: ({})
   property var _pluginBarWidgetRegistryApis: ({})
   property var _pluginAppLibraryApis: ({})
   property var _pluginBarStateApis: ({})
@@ -554,6 +555,7 @@ ShellRoot {
     var key = String(cacheKey || "")
     if (!key) return
     _pluginAppLibraryApis = shell.cacheWithoutKey(_pluginAppLibraryApis, key, true)
+    _pluginBarStateApis = shell.cacheWithoutKey(_pluginBarStateApis, key, true)
     _pluginFirstPartyServiceApis = shell.cacheWithoutPrefix(_pluginFirstPartyServiceApis, key + "::")
     _pluginBarEntryShellApis = shell.cacheWithoutPrefix(_pluginBarEntryShellApis, key + ":")
     _pluginShellApis = shell.cacheWithoutKey(_pluginShellApis, key, true)
@@ -563,19 +565,29 @@ ShellRoot {
   function createScopedPluginShell(manifest, cacheKey, allowOwnService, barCapabilities) {
     var key = String(manifest && manifest.id || "")
     if (!key) return null
+    var ownerSource = String(manifest.__sourceDir || "")
+    var ownerTrusted = manifest.__isFirstParty === true
     var profile = shell.pluginShellCapabilityProfile(manifest, allowOwnService, barCapabilities)
     var cached = _pluginShellApis[cacheKey]
     var descriptor = _pluginShellApiDescriptors[cacheKey]
     if (cached && descriptor && descriptor.pluginId === key
-        && descriptor.profile === profile) return cached
+        && descriptor.profile === profile && descriptor.ownerSource === ownerSource
+        && descriptor.ownerTrusted === ownerTrusted) return cached
     if (cached || descriptor) shell.revokePluginShellApi(cacheKey)
 
     function currentManifest() {
       return shell.pluginRegistry.installedPlugins[key] || null
     }
 
+    function ownerActive() {
+      var current = currentManifest()
+      return !!current && shell.pluginRegistry.isEnabled(key)
+        && String(current.__sourceDir || "") === ownerSource
+        && (current.__isFirstParty === true) === ownerTrusted
+    }
+
     function hasCurrentBarCapabilities() {
-      return barCapabilities && shell.pluginHasBarCapabilities(currentManifest())
+      return ownerActive() && barCapabilities && shell.pluginHasBarCapabilities(currentManifest())
     }
 
     // Construct the narrow service proxies before any plugin binding can call
@@ -599,9 +611,10 @@ ShellRoot {
       barConfig: shell.publicBarConfig(),
       idleConfig: shell.publicIdleConfigFor(manifest),
       _serviceLookup: function(requestedId) {
-        return allowOwnService ? shell.pluginServiceFor(key, requestedId) : null
+        return ownerActive() && allowOwnService ? shell.pluginServiceFor(key, requestedId) : null
       },
       _firstPartyServiceLookup: function(requestedId) {
+        if (!ownerActive()) return null
         if (allowOwnService && shell.pluginOwnsTarget(key, requestedId))
           return shell.pluginServiceFor(key, requestedId)
         return hasCurrentBarCapabilities() ? (firstPartyServices[requestedId] || null) : null
@@ -611,27 +624,32 @@ ShellRoot {
           ? shell.pluginShellForBarEntry(cacheKey + ":" + ownerId, moduleName) : null
       },
       _summon: function(requestedId, payloadJson) {
+        if (!ownerActive()) return false
         if (!shell.pluginOwnsTarget(key, requestedId)
             && !shell.barPluginMayControl(currentManifest(), requestedId)
             && !shell.pluginCloneMaySummon(currentManifest(), requestedId)) return false
         return shell.summon(shell.pluginRegistry.resolveEnabledId(requestedId), payloadJson)
       },
       _hide: function(requestedId) {
+        if (!ownerActive()) return false
         if (!shell.pluginOwnsTarget(key, requestedId)
             && !shell.barPluginMayControl(currentManifest(), requestedId)) return false
         return shell.hide(shell.pluginRegistry.resolveEnabledId(requestedId))
       },
       _toggle: function(requestedId, payloadJson) {
+        if (!ownerActive()) return false
         if (!shell.pluginOwnsTarget(key, requestedId)
             && !shell.barPluginMayControl(currentManifest(), requestedId)) return false
         return shell.toggle(shell.pluginRegistry.resolveEnabledId(requestedId), payloadJson)
       },
       _isOpen: function(requestedId) {
+        if (!ownerActive()) return false
         if (!shell.pluginOwnsTarget(key, requestedId)
             && !shell.barPluginMayControl(currentManifest(), requestedId)) return false
         return shell.isPluginOpen(shell.pluginRegistry.resolveEnabledId(requestedId))
       },
       _updateSettings: function(requestedId, settings) {
+        if (!ownerActive()) return false
         if (shell.pluginOwnsTarget(key, requestedId)) return shell.updateEntryInline(key, settings)
         if (hasCurrentBarCapabilities() && shell.barEntryConfigured(requestedId))
           return shell.updateEntryInline(requestedId, settings)
@@ -653,7 +671,9 @@ ShellRoot {
     descriptorNext[cacheKey] = {
       pluginId: key,
       allowOwnService: allowOwnService === true,
-      profile: profile
+      profile: profile,
+      ownerSource: ownerSource,
+      ownerTrusted: ownerTrusted
     }
     _pluginShellApiDescriptors = descriptorNext
     return api
@@ -733,7 +753,11 @@ ShellRoot {
     if (!manifest || manifest.__isFirstParty) return shell.pluginRegistry
     var key = String(manifest.id || "")
     if (!key) return null
-    if (_pluginRegistryApis[key]) return _pluginRegistryApis[key]
+    var source = String(manifest.__sourceDir || "")
+    var cached = _pluginRegistryApis[key]
+    if (cached && cached.pluginId === key && _pluginRegistryApiSources[key] === source)
+      return cached
+    if (cached && typeof cached.destroy === "function") cached.destroy()
 
     var api = pluginRegistryApiComponent.createObject(null, {
       pluginId: key,
@@ -750,6 +774,11 @@ ShellRoot {
     for (var id in _pluginRegistryApis) next[id] = _pluginRegistryApis[id]
     next[key] = api
     _pluginRegistryApis = next
+    var sources = ({})
+    for (var sourceId in _pluginRegistryApiSources)
+      if (sourceId !== key) sources[sourceId] = _pluginRegistryApiSources[sourceId]
+    sources[key] = source
+    _pluginRegistryApiSources = sources
     return api
   }
 
@@ -791,22 +820,33 @@ ShellRoot {
       var expectedProfile = descriptor
         ? shell.pluginShellCapabilityProfile(manifest, descriptor.allowOwnService, barCapabilities) : ""
       var active = descriptor && manifest && shell.pluginRegistry.isEnabled(descriptor.pluginId)
-      if (!active || descriptor.profile !== expectedProfile)
+      if (!active || descriptor.profile !== expectedProfile
+          || descriptor.ownerSource !== String(manifest.__sourceDir || "")
+          || descriptor.ownerTrusted !== (manifest.__isFirstParty === true))
         shell.revokePluginShellApi(shellKey)
     }
 
     var registryNext = ({})
+    var registrySourcesNext = ({})
     for (var registryKey in _pluginRegistryApis) {
       var registryApi = _pluginRegistryApis[registryKey]
-      if (shell.pluginApiActive(registryApi, plugins)) registryNext[registryKey] = registryApi
-      else if (registryApi && typeof registryApi.destroy === "function") registryApi.destroy()
+      var registryManifest = plugins[registryKey]
+      if (registryManifest && !registryManifest.__isFirstParty
+          && shell.pluginRegistry.isEnabled(registryKey)
+          && registryApi && registryApi.pluginId === registryKey
+          && _pluginRegistryApiSources[registryKey] === String(registryManifest.__sourceDir || "")) {
+        registryNext[registryKey] = registryApi
+        registrySourcesNext[registryKey] = _pluginRegistryApiSources[registryKey]
+      } else if (registryApi && typeof registryApi.destroy === "function") registryApi.destroy()
     }
     _pluginRegistryApis = registryNext
+    _pluginRegistryApiSources = registrySourcesNext
 
     var widgetNext = ({})
     for (var widgetKey in _pluginBarWidgetRegistryApis) {
       var widgetApi = _pluginBarWidgetRegistryApis[widgetKey]
-      if (plugins[widgetKey] && shell.pluginRegistry.isEnabled(widgetKey)) widgetNext[widgetKey] = widgetApi
+      if (plugins[widgetKey] && !plugins[widgetKey].__isFirstParty
+          && shell.pluginRegistry.isEnabled(widgetKey)) widgetNext[widgetKey] = widgetApi
       else if (widgetApi && typeof widgetApi.destroy === "function") widgetApi.destroy()
     }
     _pluginBarWidgetRegistryApis = widgetNext
