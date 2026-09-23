@@ -120,6 +120,30 @@ for _ in {1..100}; do
   sleep 0.1
 done
 [[ -s $TMPDIR/runtime.json ]] || fail "runtime plugin discovery completes" "$(cat "$TMPDIR/quickshell.log")"
-jq -e --slurpfile expected "$expected" '.plugins == $expected[0] and .capabilities == ($expected[0] | map_values(if .firstParty then ["authentication"] else [] end))' "$TMPDIR/runtime.json" >/dev/null ||
+jq -e --slurpfile expected "$expected" --arg xdg "$XDG_DATA_DIRS" '.plugins == $expected[0] and .capabilities == ($expected[0] | map_values(if .firstParty then ["authentication"] else [] end)) and .scanXdgArg == $xdg' "$TMPDIR/runtime.json" >/dev/null ||
   fail "runtime matches catalog discovery and grants capabilities only to trusted origins" "$(cat "$TMPDIR/runtime.json")"
 pass "runtime matches catalog discovery and grants capabilities only to trusted origins"
+
+kill "$QS_PID" 2>/dev/null || true
+wait "$QS_PID" 2>/dev/null || true
+QS_PID=""
+env -u XDG_DATA_DIRS OMARCHY_QML_TEST_RESULT="$TMPDIR/unset-runtime.json" \
+  XDG_CONFIG_HOME="$HOME/.config" \
+  XDG_CACHE_HOME="$HOME/.cache" \
+  XDG_STATE_HOME="$HOME/.local/state" \
+  QML2_IMPORT_PATH="$ROOT/shell${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}" \
+  QML_IMPORT_PATH="$ROOT/shell${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}" \
+  quickshell -p "$config_dir" --no-color >"$TMPDIR/unset-quickshell.log" 2>&1 &
+QS_PID=$!
+for _ in {1..100}; do
+  [[ -s $TMPDIR/unset-runtime.json ]] && break
+  kill -0 "$QS_PID" 2>/dev/null || break
+  sleep 0.1
+done
+[[ -s $TMPDIR/unset-runtime.json ]] || fail "runtime discovery completes with XDG_DATA_DIRS unset" "$(cat "$TMPDIR/unset-quickshell.log")"
+jq -e --slurpfile catalog "$TMPDIR/unset.json" '
+  .scanXdgArg == "" and
+  .plugins == ($catalog[0] | map({key: .id, value: {sourceDir, firstParty}}) | from_entries)
+' "$TMPDIR/unset-runtime.json" >/dev/null ||
+  fail "runtime uses default data roots when XDG_DATA_DIRS is unset" "$(cat "$TMPDIR/unset-runtime.json")"
+pass "runtime uses default data roots when XDG_DATA_DIRS is unset"

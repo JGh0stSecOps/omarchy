@@ -709,7 +709,7 @@ QtObject {
       + "  [[ $dir == /* ]] || continue; "
       + "  scan_root \"${dir%/}/omarchy/shell/plugins\" data 3; "
       + "done"
-    scanProcess.command = ["bash", "-c", script, registry.firstPartyDir, registry.pluginsDir, Quickshell.env("XDG_DATA_DIRS")]
+    scanProcess.command = ["bash", "-c", script, registry.firstPartyDir, registry.pluginsDir, Quickshell.env("XDG_DATA_DIRS") || ""]
     scanProcess.running = true
   }
 

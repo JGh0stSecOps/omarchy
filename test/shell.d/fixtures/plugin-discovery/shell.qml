@@ -15,7 +15,8 @@ ShellRoot {
     }
     var payload = JSON.stringify({
       plugins: plugins,
-      capabilities: capabilities
+      capabilities: capabilities,
+      scanXdgArg: registry.scanProcess.command[5]
     })
     Quickshell.execDetached(["bash", "-c", "printf '%s' \"$1\" > \"$2\"", "plugin-discovery", payload, Quickshell.env("OMARCHY_QML_TEST_RESULT")])
   }
