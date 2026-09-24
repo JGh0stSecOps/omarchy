@@ -18,10 +18,15 @@ if [[ $action != "enable" && $action != "disable" ]]; then
 fi
 
 state_file="${XDG_RUNTIME_DIR:?}/voxtype/state"
-if [[ -f $state_file && $(<"$state_file") != "idle" ]]; then
-  echo "Finish the current dictation before changing engines." >&2
-  exit 1
-fi
+check_idle() {
+  if [[ -f $state_file && $(<"$state_file") != "idle" ]]; then
+    echo "Finish the current dictation before changing engines." >&2
+    exit 1
+  fi
+}
+check_idle
+exec 9>"$XDG_RUNTIME_DIR/voxtype-cohere-setup.lock"
+flock -n 9 || { echo "Cohere setup is already running." >&2; exit 1; }
 
 if [[ $action == "enable" ]]; then
   if omarchy-cmd-missing voxtype-cohere-vulkan; then
@@ -29,9 +34,7 @@ if [[ $action == "enable" ]]; then
     exit 1
   fi
   mkdir -p "$model_dir"
-  # Serialize setup and keep partial downloads away from the active model.
-  exec 9>"$model_dir/.setup.lock"
-  flock -n 9 || { echo "Cohere setup is already running." >&2; exit 1; }
+  # Keep partial downloads away from the active model.
   if ! echo "$model_sha  $model" | sha256sum --check --status; then
     echo "Downloading Cohere Transcribe (1.56GB)…"
     curl --fail --location --retry 3 --connect-timeout 20 \
@@ -42,6 +45,8 @@ if [[ $action == "enable" ]]; then
   fi
   echo "Checking Vulkan with a spoken transcription…"
   timeout 120 voxtype-cohere-vulkan --model "$model" --probe
+  # Downloads and GPU warmup can take minutes; a recording may have begun.
+  check_idle
 
   mkdir -p "${dropin%/*}"
   backup=""

@@ -35,7 +35,10 @@ case $name in
   omarchy-pkg-add)
     if [[ $* == "voxtype-cohere-vulkan" ]]; then exit "${PACKAGE_FAILURE:-0}"; fi
     ;;
-  voxtype-cohere-vulkan) exit "${PROBE_FAILURE:-0}" ;;
+  voxtype-cohere-vulkan)
+    if [[ ${RECORD_DURING_PROBE:-0} == 1 ]]; then printf 'recording\n' >"$XDG_RUNTIME_DIR/voxtype/state"; fi
+    exit "${PROBE_FAILURE:-0}"
+    ;;
   sha256sum)
     read -r checksum filename
     [[ -f $filename && ${HASH_FAILURE:-0} == 0 ]]
@@ -75,7 +78,7 @@ reset_fixture() {
   rm -rf "$HOME/.config/voxtype" "$HOME/.config/systemd" "$HOME/.local/share/voxtype"
   : >"$VOXTYPE_TEST_LOG"
   printf 'idle\n' >"$XDG_RUNTIME_DIR/voxtype/state"
-  unset NO_VULKAN PACKAGE_FAILURE PROBE_FAILURE DOWNLOAD_FAILURE HASH_FAILURE SERVICE_FAILURE
+  unset NO_VULKAN PACKAGE_FAILURE PROBE_FAILURE DOWNLOAD_FAILURE HASH_FAILURE SERVICE_FAILURE RECORD_DURING_PROBE
 }
 
 reset_fixture
@@ -117,6 +120,12 @@ printf 'recording\n' >"$XDG_RUNTIME_DIR/voxtype/state"
 if omarchy-voxtype-cohere enable >/dev/null 2>&1; then fail "active recording rejects engine changes"; fi
 [[ ! -s $VOXTYPE_TEST_LOG ]] || fail "recording check runs before external side effects"
 pass "active recording rejects engine changes"
+
+reset_fixture
+export RECORD_DURING_PROBE=1
+if omarchy-voxtype-cohere enable >/dev/null 2>&1; then fail "recording begun during setup rejects activation"; fi
+[[ ! -f $dropin && ! -f $service ]] || fail "recording begun during setup leaves units untouched"
+pass "recording begun during download or probe rejects activation"
 
 reset_fixture
 export VOXTYPE_WHISPER_API_KEY="test-placeholder"
