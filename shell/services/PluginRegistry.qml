@@ -101,17 +101,16 @@ QtObject {
     return out
   }
 
-  function stampHostCapabilities(firstParty, thirdParty) {
-    for (var firstPartyId in firstParty)
-      firstParty[firstPartyId].__hostCapabilities = trustedCapabilities(firstParty[firstPartyId])
-
-    for (var thirdPartyId in thirdParty) {
-      var manifest = thirdParty[thirdPartyId]
-      var metadata = manifest && Util.isPlainObject(manifest.omarchy) ? manifest.omarchy : null
-      var clonedFrom = metadata ? String(metadata.clonedFrom || "") : ""
-      var source = clonedFrom ? firstParty[clonedFrom] : null
-      manifest.__hostCapabilities = source && Array.isArray(source.__hostCapabilities)
-        ? source.__hostCapabilities.slice() : []
+  function stampHostCapabilities(selected) {
+    for (var id in selected) {
+      var manifest = selected[id]
+      var source = manifest
+      if (!manifest.__isFirstParty) {
+        var metadata = Util.isPlainObject(manifest.omarchy) ? manifest.omarchy : null
+        var clonedFrom = metadata ? String(metadata.clonedFrom || "") : ""
+        source = clonedFrom ? selected[clonedFrom] : null
+      }
+      manifest.__hostCapabilities = trustedCapabilities(source)
     }
   }
 
@@ -625,15 +624,8 @@ QtObject {
     }
     flush()
 
-    // Select by search order before assigning capabilities so an untrusted
-    // personal override cannot inherit the packaged copy's trust.
-    var firstParty = {}
-    var thirdParty = {}
-    for (var id in selected) {
-      var target = selected[id].__isFirstParty ? firstParty : thirdParty
-      target[id] = selected[id]
-    }
-    stampHostCapabilities(firstParty, thirdParty)
+    // Only the first valid manifest for an id can grant capabilities.
+    stampHostCapabilities(selected)
 
     installedPlugins = selected
     registryRevision++
