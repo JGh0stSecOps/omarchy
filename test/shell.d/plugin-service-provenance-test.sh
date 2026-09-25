@@ -285,3 +285,88 @@ const fallbackApi = bar.pluginBarApiFor(id, id, true)
 assert(dataApi.destroyed && fallbackApi !== dataApi,
   'built-in bar also revokes a changed source before pruning')
 JS
+
+run_node_test <<'JS'
+const fs = require('fs')
+const vm = require('vm')
+const source = fs.readFileSync(path.join(root, 'shell/shell.qml'), 'utf8')
+const pending = []
+const registrations = {}
+const host = {
+  console,
+  Component: { Ready: 1, Loading: 2, Error: 3, Asynchronous: 0 },
+  Qt: { createComponent(url) {
+    const component = {
+      url, status: 2,
+      statusChanged: { connect(callback) { pending.push(() => { component.status = 1; callback() }) } }
+    }
+    return component
+  } },
+  pluginWidgetComponents: {},
+  pluginRegistry: {
+    installedPlugins: {},
+    isEnabled() { return true },
+    entryPointUrl(manifest) { return manifest.__sourceDir + '/' + manifest.entryPoints.barWidget }
+  },
+  barWidgetRegistry: {
+    has(id) { return !!registrations[id] },
+    register(id, component) { registrations[id] = component },
+    unregister(id) { delete registrations[id] }
+  }
+}
+host.shell = host
+vm.createContext(host)
+for (const name of ['pluginSourceProvenance', 'setPluginWidgetComponent', 'loadPluginWidget', 'syncPluginWidgets']) {
+  const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'))
+  assert(!!match, `host defines ${name}`)
+  vm.runInContext(match[0], host)
+}
+function widget(id, sourceDir, trusted = false) {
+  return { id, __sourceDir: sourceDir, __isFirstParty: trusted,
+    kinds: ['bar-widget'], entryPoints: { barWidget: 'Widget.qml' } }
+}
+const id = 'acme.async-widget'
+host.pluginRegistry.installedPlugins[id] = widget(id, '/home/widget')
+host.syncPluginWidgets()
+assertEqual(pending.length, 1, 'first widget component load is pending')
+host.pluginRegistry.installedPlugins[id] = widget(id, '/data/widget')
+host.syncPluginWidgets()
+assertEqual(pending.length, 2, 'replacement widget load is pending')
+pending[0]()
+assert(!registrations[id], 'stale widget completion does not publish the old source')
+pending[1]()
+assert(registrations[id] && registrations[id].url === '/data/widget/Widget.qml',
+  'only the selected widget source is registered')
+
+const lateId = 'acme.late-old-widget'
+host.pluginRegistry.installedPlugins[lateId] = widget(lateId, '/home/late')
+host.syncPluginWidgets()
+host.pluginRegistry.installedPlugins[lateId] = widget(lateId, '/data/late')
+host.syncPluginWidgets()
+pending[3]()
+pending[2]()
+assert(registrations[lateId] && registrations[lateId].url === '/data/late/Widget.qml',
+  'an old widget finishing last cannot replace the selected source')
+assert(host.pluginWidgetComponents[lateId] && host.pluginWidgetComponents[lateId].url === '/data/late/Widget.qml',
+  'an old widget finishing last cannot clear the selected claim')
+
+const changedId = 'acme.changed-before-scan'
+host.pluginRegistry.installedPlugins[changedId] = widget(changedId, '/same/widget')
+host.syncPluginWidgets()
+host.pluginRegistry.installedPlugins[changedId] = widget(changedId, '/same/widget', true)
+pending[4]()
+assert(!registrations[changedId] && !host.pluginWidgetComponents[changedId],
+  'a changed selection invalidates its pending widget before the next scan')
+
+const removedId = 'acme.removed-widget'
+delete host.pluginRegistry.installedPlugins[changedId]
+host.pluginRegistry.installedPlugins[removedId] = widget(removedId, '/home/removed')
+host.syncPluginWidgets()
+delete host.pluginRegistry.installedPlugins[removedId]
+host.syncPluginWidgets()
+assert(!host.pluginWidgetComponents[removedId],
+  'removing a widget clears its pending claim before completion')
+pending[5]()
+assert(!registrations[removedId] && !host.pluginWidgetComponents[removedId],
+  'removing a widget clears its pending claim and blocks late publication')
+JS

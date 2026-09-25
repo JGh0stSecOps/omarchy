@@ -1480,7 +1480,6 @@ ShellRoot {
       if (!shell.pluginRegistry.isEnabled(pluginId)) continue
 
       var registryKey = String(manifest.id)
-      seen[registryKey] = true
 
       // Already loaded with matching source — leave it alone.
       var existing = pluginWidgetComponents[registryKey]
@@ -1489,6 +1488,8 @@ ShellRoot {
         console.warn("Plugin " + manifest.id + " has no barWidget entry point")
         continue
       }
+      seen[registryKey] = true
+      var provenance = shell.pluginSourceProvenance(manifest)
       var meta = manifest.barWidget || {}
       meta = {
         displayName: meta.displayName || manifest.name,
@@ -1508,30 +1509,29 @@ ShellRoot {
       // finishes. Starting a second one produces a second Component for the
       // same widget, and swapping a slot's component rebuilds its item —
       // briefly running two of the widget, each registering its IPC handler.
-      if (existing && existing.url === url && !existing.component) continue
+      if (existing && existing.url === url && existing.provenance === provenance
+          && !existing.component) continue
 
       // If the component URL is unchanged, just refresh the metadata in
       // place. We can't skip this even when the URL matches: manifests can
       // change schema, defaults, or sourceDir between rescans, and the
       // settings panel reads metadata from the registry.
-      if (existing && existing.url === url && shell.barWidgetRegistry.has(registryKey)) {
+      if (existing && existing.url === url && existing.provenance === provenance
+          && shell.barWidgetRegistry.has(registryKey)) {
         shell.barWidgetRegistry.register(registryKey, existing.component, meta)
         continue
       }
 
-      loadPluginWidget(registryKey, url, meta)
+      loadPluginWidget(registryKey, url, meta, provenance)
     }
 
     // Drop registrations for plugins that are no longer present or enabled.
-    var allIds = shell.barWidgetRegistry.availableIds()
-    for (var i = 0; i < allIds.length; i++) {
-      var id = allIds[i]
-      if (!pluginWidgetComponents[id]) continue
+    var claimedIds = Object.keys(pluginWidgetComponents)
+    for (var i = 0; i < claimedIds.length; i++) {
+      var id = claimedIds[i]
       if (!seen[id]) {
         shell.barWidgetRegistry.unregister(id)
-        var next = ({})
-        for (var k in pluginWidgetComponents) if (k !== id) next[k] = pluginWidgetComponents[k]
-        pluginWidgetComponents = next
+        shell.setPluginWidgetComponent(id, null)
       }
     }
   }
@@ -1590,18 +1590,27 @@ ShellRoot {
     pluginWidgetComponents = next
   }
 
-  function loadPluginWidget(registryKey, url, meta) {
+  function loadPluginWidget(registryKey, url, meta, provenance) {
     // Claim the key before the component exists. Qt.createComponent is
     // asynchronous and syncPluginWidgets runs several times while the shell
     // starts, so without a marker the later passes cannot tell a load in
     // flight from one that never happened.
-    setPluginWidgetComponent(registryKey, { url: url, component: null })
+    var claim = { url: url, provenance: provenance, component: null }
+    setPluginWidgetComponent(registryKey, claim)
 
     var comp = Qt.createComponent(url, Component.Asynchronous)
     function finalize() {
+      if (pluginWidgetComponents[registryKey] !== claim) return
+      var current = shell.pluginRegistry.installedPlugins[registryKey]
+      if (!current || !shell.pluginRegistry.isEnabled(registryKey)
+          || shell.pluginSourceProvenance(current) !== provenance
+          || shell.pluginRegistry.entryPointUrl(current, "barWidget") !== url) {
+        shell.setPluginWidgetComponent(registryKey, null)
+        return
+      }
       if (comp.status === Component.Ready) {
         shell.barWidgetRegistry.register(registryKey, comp, meta)
-        shell.setPluginWidgetComponent(registryKey, { url: url, component: comp })
+        shell.setPluginWidgetComponent(registryKey, { url: url, provenance: provenance, component: comp })
       } else if (comp.status === Component.Error) {
         console.warn("Plugin widget " + registryKey + " failed: " + comp.errorString())
         // Drop the claim so a later rescan can retry.
