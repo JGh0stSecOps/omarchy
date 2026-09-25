@@ -28,6 +28,7 @@ const host = {
   pluginRegistry: {
     installedPlugins: {},
     isEnabled() { return true },
+    resolveEnabledId(id) { return id },
     entryPointUrl(manifest) { return manifest.__sourceDir + '/' + manifest.entryPoints.service }
   },
   pluginShellFor(manifest) { return manifest.__isFirstParty ? trustedApi : scopedApi },
@@ -36,20 +37,27 @@ const host = {
   _pluginShellApis: {},
   _pluginShellApiDescriptors: {},
   _pluginBarWidgetRegistryApis: {},
+  _pluginBarWidgetRegistryApiSources: {},
   _pluginAppLibraryApis: {},
   _pluginBarStateApis: {},
   _pluginFirstPartyServiceApis: {},
   _pluginBarEntryShellApis: {},
+  _pluginBarEntryShellApiOwners: {},
   pluginShellApiComponent: { createObject(_parent, properties) {
     return { ...properties, destroyed: false, destroy() { this.destroyed = true } }
   } },
+  pluginBarWidgetRegistryApiComponent: { createObject(_parent, properties) {
+    return { ...properties, destroyed: false, destroy() { this.destroyed = true } }
+  } },
+  barWidgetRegistry: { revision: 1 },
+  publicBarWidgetSnapshot() { return { fresh: { metadata: {} } } },
   pluginBarStateFor() { return {} },
   publicBarConfig() { return {} },
   publicIdleConfigFor() { return {} },
   manifestHasKind(value, kind) { return value.kinds.includes(kind) },
   pluginHasBarCapabilities(value) { return !!value && value.kinds.includes('bar') },
   pluginServiceFor(_owner, requestedId) { return host._services[requestedId] || null },
-  pluginBarWidgetRegistryFor() { return {} },
+  barEntryConfigured() { return true },
   pluginRegistryFor() { return {} },
   Qt: {
     createComponent(url) {
@@ -75,7 +83,7 @@ const host = {
 }
 host.shell = host
 vm.createContext(host)
-for (const name of ['publicPluginManifest', 'pluginShellCapabilityProfile', 'cacheWithoutKey', 'cacheWithoutPrefix', 'revokePluginShellApi', 'createScopedPluginShell', 'pluginApiActive', 'prunePluginApis', 'syncPluginApis', 'isAuthenticationService', 'serviceProvenance', 'ensureService', '_syncServices', 'serviceKeepLoaded', 'unloadPluginServices']) {
+for (const name of ['publicPluginManifest', 'pluginShellCapabilityProfile', 'cacheWithoutKey', 'cacheWithoutPrefix', 'revokePluginShellApi', 'createScopedPluginShell', 'pluginShellForBarEntry', 'pluginBarWidgetRegistryFor', 'pluginApiActive', 'prunePluginApis', 'syncPluginApis', 'isAuthenticationService', 'pluginSourceProvenance', 'serviceProvenance', 'ensureService', '_syncServices', 'serviceKeepLoaded', 'unloadPluginServices']) {
   const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'))
   assert(!!match, `host defines ${name}`)
   vm.runInContext(match[0], host)
@@ -151,6 +159,42 @@ assert(plainFacade.destroyed && !host._pluginRegistryApis[plainId]
   && host._services[plainId] !== plainHome && plainHome.destroyed,
   'an untrusted source change revokes the old registry facade and service')
 
+const widgetId = 'acme.widget-view'
+const widgetHome = manifest(widgetId, '/home/plugins/widget-view', false)
+host.pluginRegistry.installedPlugins[widgetId] = widgetHome
+const oldWidgetApi = host.pluginBarWidgetRegistryFor(widgetHome)
+oldWidgetApi.widgets = { tampered: true }
+const widgetData = manifest(widgetId, '/data/plugins/widget-view', false)
+host.pluginRegistry.installedPlugins[widgetId] = widgetData
+host.syncPluginApis()
+assert(oldWidgetApi.destroyed && !host._pluginBarWidgetRegistryApis[widgetId],
+  'an untrusted source change revokes the old widget registry facade')
+const newWidgetApi = host.pluginBarWidgetRegistryFor(widgetData)
+assert(newWidgetApi !== oldWidgetApi && !newWidgetApi.widgets.tampered && newWidgetApi.widgets.fresh,
+  'the replacement receives a fresh widget registry snapshot')
+
+const entryId = 'acme.bar-entry'
+const entryHome = manifest(entryId, '/home/plugins/bar-entry', false)
+host.pluginRegistry.installedPlugins[entryId] = entryHome
+const oldEntryApi = host.pluginShellForBarEntry('bar-owner', entryId)
+assert(host.pluginShellForBarEntry('bar-owner', entryId) === oldEntryApi,
+  'unchanged replacement bar entry keeps its facade')
+oldEntryApi._updateSettings = null
+host.pluginRegistry.installedPlugins[entryId] = manifest(entryId, '/data/plugins/bar-entry', false)
+host.syncPluginApis()
+assert(oldEntryApi.destroyed && !host._pluginBarEntryShellApis['bar-owner::' + entryId],
+  'a target source change prunes a replacement bar entry facade')
+const dataEntryApi = host.pluginShellForBarEntry('bar-owner', entryId)
+assert(dataEntryApi !== oldEntryApi && typeof dataEntryApi._updateSettings === 'function',
+  'the replacement bar entry receives working callbacks')
+host.pluginRegistry.installedPlugins[entryId] = manifest(entryId, '/fallback/plugins/bar-entry', false)
+const fallbackEntryApi = host.pluginShellForBarEntry('bar-owner', entryId)
+assert(dataEntryApi.destroyed && fallbackEntryApi !== dataEntryApi,
+  'a target source change also revokes its facade before pruning')
+host.revokePluginShellApi('bar-owner')
+assert(fallbackEntryApi.destroyed && !host._pluginBarEntryShellApiOwners['bar-owner::' + entryId],
+  'revoking the bar owner clears its entry facade provenance')
+
 const removedId = 'acme.removed'
 const spoofedFacade = { pluginId: id, destroyed: false, destroy() { this.destroyed = true } }
 host._pluginRegistryApis[removedId] = spoofedFacade
@@ -194,4 +238,50 @@ assert(created.length === beforeAsync + 1 && host._services[asyncId].url === '/n
 host.pluginRegistry.installedPlugins = {}
 host._syncServices()
 assertEqual(Object.keys(host._serviceProvenance).length, 0, 'removed services release their provenance records')
+JS
+
+run_node_test <<'JS'
+const fs = require('fs')
+const vm = require('vm')
+const source = fs.readFileSync(path.join(root, 'shell/plugins/bar/Bar.qml'), 'utf8')
+const bar = {
+  console,
+  pluginBarApis: {},
+  pluginBarApiSources: {},
+  moduleSlots: [],
+  currentMetadata: { sourceDir: '/home/plugins/widget', firstParty: false },
+  barWidgetRegistry: { metadataFor() { return bar.currentMetadata } },
+  canonicalWidgetId(id) { return id },
+  shell: { pluginShellForId() { return {} } },
+  pluginBarApiComponent: { createObject(_parent, properties) {
+    return { ...properties, destroyed: false, destroy() { this.destroyed = true } }
+  } },
+  bindPluginBarApi(api) { api.foreground = 'bound' },
+  releasePluginObjects() {}
+}
+bar.root = bar
+vm.createContext(bar)
+for (const name of ['pluginBarApiProvenance', 'pluginBarApiFor', 'pluginBarApiSource', 'prunePluginBarApis']) {
+  const match = source.match(new RegExp('  function ' + name + '\\([^]*?\\n  \\}'))
+  assert(!!match, `bar defines ${name}`)
+  vm.runInContext(match[0], bar)
+}
+const id = 'acme.widget'
+bar.moduleSlots = [{ pluginApiId: id, registered: true, registryMetadata: bar.currentMetadata }]
+const homeApi = bar.pluginBarApiFor(id, id, true)
+assert(bar.pluginBarApiFor(id, id, true) === homeApi,
+  'unchanged built-in bar widget keeps its facade')
+homeApi.foreground = 'tampered'
+bar.currentMetadata = { sourceDir: '/data/plugins/widget', firstParty: false }
+bar.moduleSlots[0].registryMetadata = bar.currentMetadata
+bar.prunePluginBarApis()
+assert(homeApi.destroyed && !bar.pluginBarApis[id],
+  'built-in bar prunes the previous source widget facade')
+const dataApi = bar.pluginBarApiFor(id, id, true)
+assert(dataApi !== homeApi && dataApi.foreground === 'bound',
+  'replacement widget receives fresh bar bindings')
+bar.currentMetadata = { sourceDir: '/fallback/plugins/widget', firstParty: false }
+const fallbackApi = bar.pluginBarApiFor(id, id, true)
+assert(dataApi.destroyed && fallbackApi !== dataApi,
+  'built-in bar also revokes a changed source before pruning')
 JS
