@@ -14,6 +14,7 @@ vm.runInContext(fs.readFileSync(path.join(root, 'shell/services/AuthServiceStore
 
 const created = []
 const pending = []
+const disabled = new Set()
 let delayedUrl = ''
 const trustedApi = { trusted: true }
 const scopedApi = { trusted: false }
@@ -27,7 +28,7 @@ const host = {
   Component: { Ready: 1, Loading: 2, PreferSynchronous: 0 },
   pluginRegistry: {
     installedPlugins: {},
-    isEnabled() { return true },
+    isEnabled(id) { return !disabled.has(id) },
     resolveEnabledId(id) { return id },
     entryPointUrl(manifest) { return manifest.__sourceDir + '/' + manifest.entryPoints.service }
   },
@@ -235,6 +236,17 @@ pending[1]()
 assert(created.length === beforeAsync + 1 && host._services[asyncId].url === '/new/Service.qml',
   'current asynchronous completion publishes only the selected implementation')
 
+const disabledId = 'omacom.disabled-async'
+delayedUrl = '/disabled/Service.qml'
+select(manifest(disabledId, '/disabled', false))
+assertEqual(pending.length, 3, 'disabled service begins an asynchronous load')
+disabled.add(disabledId)
+host._syncServices()
+const beforeDisabledCompletion = created.length
+pending[2]()
+assert(created.length === beforeDisabledCompletion && !host._services[disabledId],
+  'disabled service cannot publish after its pending load completes')
+
 host.pluginRegistry.installedPlugins = {}
 host._syncServices()
 assertEqual(Object.keys(host._serviceProvenance).length, 0, 'removed services release their provenance records')
@@ -298,7 +310,8 @@ const host = {
   Qt: { createComponent(url) {
     const component = {
       url, status: 2,
-      statusChanged: { connect(callback) { pending.push(() => { component.status = 1; callback() }) } }
+      statusChanged: { connect(callback) { pending.push((status = 1) => { component.status = status; callback() }) } },
+      errorString() { return 'broken widget' }
     }
     return component
   } },
@@ -306,7 +319,8 @@ const host = {
   pluginRegistry: {
     installedPlugins: {},
     isEnabled() { return true },
-    entryPointUrl(manifest) { return manifest.__sourceDir + '/' + manifest.entryPoints.barWidget }
+    entryPointUrl(manifest) { return manifest.__sourceDir + '/' + manifest.entryPoints.barWidget },
+    pluginLoadFailed() {}
   },
   barWidgetRegistry: {
     has(id) { return !!registrations[id] },
@@ -369,4 +383,16 @@ assert(!host.pluginWidgetComponents[removedId],
 pending[5]()
 assert(!registrations[removedId] && !host.pluginWidgetComponents[removedId],
   'removing a widget clears its pending claim and blocks late publication')
+
+const failedId = 'acme.failed-replacement'
+host.pluginRegistry.installedPlugins[failedId] = widget(failedId, '/home/failure')
+host.syncPluginWidgets()
+pending[6]()
+assert(registrations[failedId], 'original widget is registered before replacement')
+host.pluginRegistry.installedPlugins[failedId] = widget(failedId, '/data/failure')
+host.syncPluginWidgets()
+assert(!registrations[failedId], 'replacing a widget drops the displaced registration')
+pending[7](3)
+assert(!registrations[failedId] && !host.pluginWidgetComponents[failedId],
+  'failed widget replacement cannot leave an orphan registration')
 JS

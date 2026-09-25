@@ -996,7 +996,8 @@ ShellRoot {
     var comp = Qt.createComponent(url, Component.PreferSynchronous)
     function finalize() {
       var current = pluginRegistry.installedPlugins[key]
-      if (!current || shell.serviceProvenance(current) !== provenance) return
+      if (!current || !pluginRegistry.isEnabled(key)
+          || shell.serviceProvenance(current) !== provenance) return
       if (_services[key] || AuthServiceStore.has(key)) return
       if (comp.status !== Component.Ready) {
         console.warn("service plugin load failed for " + key + ": " + comp.errorString())
@@ -1522,6 +1523,8 @@ ShellRoot {
         continue
       }
 
+      // A failed replacement must not leave the displaced widget registered.
+      if (shell.barWidgetRegistry.has(registryKey)) shell.barWidgetRegistry.unregister(registryKey)
       loadPluginWidget(registryKey, url, meta, provenance)
     }
 
