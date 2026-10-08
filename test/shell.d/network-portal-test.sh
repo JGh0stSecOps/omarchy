@@ -99,3 +99,6 @@ pass "the sign-in view stacks above the network panel"
 grep -q 'omarchy-keyboard-panel' "$signin" || fail "the sign-in view follows the panel that opened it"
 pass "the sign-in view follows the panel that opened it"
 
+python3 -u "$ROOT/test/shell.d/fixtures/network-portal-tls.py" "$signin" ||
+  fail "portal TLS failures never authorize a certificate or downgrade HTTPS"
+pass "portal TLS failures never authorize a certificate or downgrade HTTPS (mocked WebKit)"

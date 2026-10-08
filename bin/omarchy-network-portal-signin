@@ -14,11 +14,9 @@ tiles it, and `exclusive_zone` is 0 so it reserves no space -- nothing on the
 desktop moves when it opens or closes. Its WebKit session is ephemeral, so the
 gateway sees an empty profile and leaves nothing behind.
 
-It keeps the panel's security posture exactly as it was. The URL is still the
-fixed plain-HTTP probe endpoint the caller passes in, never a Location header
-scraped off the network, and the redirect to the real portal is followed by the
-web view the same way a browser would follow it -- only inside a throwaway
-profile that cannot reach the filesystem.
+The URL is still the fixed plain-HTTP probe endpoint the caller passes in,
+never a Location header scraped off the network, and the redirect is followed
+by the web view inside a throwaway profile with file-origin access restricted.
 
 It is phone-shaped because every portal ships a mobile page -- most guests sign
 in from a phone -- and those pages are single-column, large-target, and far
@@ -197,8 +195,6 @@ class Portal:
   def __init__(self, url: str, ssid: str, beside: int) -> None:
     self.url = url
     self.ssid = ssid
-    self.trust_prompt = None
-    self.pending_certificate = None
 
     self.window = Gtk.Window()
     self.window.get_style_context().add_class("portal")
@@ -329,16 +325,16 @@ class Portal:
 
     settings.set_user_agent_with_application_details("Omarchy", omarchy_version())
     option("enable-developer-extras", False)
-    # The page here is written by whoever runs the network. Deny it the local
-    # filesystem outright.
+    # Restrict file-origin access without weakening normal web-origin checks.
     option("allow-file-access-from-file-urls", False)
     option("allow-universal-access-from-file-urls", False)
-    # Portals are plain HTTP and full of mixed content by design.
-    option("allow-running-of-insecure-content", True)
-    option("allow-display-of-insecure-content", True)
 
+    # Keep WebKit's default TLS FAIL policy and mixed-content protections.
+    # Unhandled TLS failures reach load-failed and terminate the load. Never
+    # offer certificate exceptions: GLib's error flags need not report every
+    # problem, so even a seemingly isolated UNKNOWN_CA cannot be waived safely.
+    # Plain HTTP portal discovery is independent of failed HTTPS requests.
     view.connect("load-changed", self.on_load)
-    view.connect("load-failed-with-tls-errors", self.on_tls_error)
     view.connect("load-failed", self.on_load_failed)
     view.load_uri(self.url)
     self.view = view
@@ -347,29 +343,7 @@ class Portal:
   def on_load(self, view, event) -> None:
     if event == WebKit2.LoadEvent.COMMITTED:
       self.address.set_text(view.get_uri() or "")
-
-  def on_tls_error(self, view, failing_uri, certificate, errors) -> bool:
-    """A gateway presenting a bad certificate is ordinary -- intercepting
-    traffic is its job -- but it is not something to wave through silently. The
-    exception is offered per host, taken only on a click, and dies with this
-    ephemeral session."""
-    host = urlparse(failing_uri).hostname or failing_uri
-    self.pending_certificate = (failing_uri, certificate, host)
-    self.footer.set_text("This gateway's certificate is not valid for %s." % host)
-
-    if self.trust_prompt is None:
-      self.trust_prompt = Gtk.Button(label="Continue to %s anyway" % host)
-      self.trust_prompt.connect("clicked", self.accept_certificate)
-      self.window.get_child().pack_start(self.trust_prompt, False, False, 0)
-      self.trust_prompt.show()
-    return True
-
-  def accept_certificate(self, _button) -> None:
-    failing_uri, certificate, host = self.pending_certificate
-    self.view.get_context().allow_tls_certificate_for_host(certificate, host)
-    self.trust_prompt.destroy()
-    self.trust_prompt = None
-    self.view.load_uri(failing_uri)
+      self.footer.set_text("Esc closes. Private session — nothing is kept.")
 
   def on_load_failed(self, _view, _event, failing_uri, error) -> bool:
     self.footer.set_text("Could not load %s — %s" % (failing_uri, error.message))
