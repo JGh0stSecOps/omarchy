@@ -6,21 +6,15 @@ require_command python3
 
 signin="$ROOT/bin/omarchy-network-portal-signin"
 panel="$ROOT/shell/plugins/panels/network/Panel.qml"
-model="$ROOT/shell/plugins/panels/network/Model.js"
 
-# The sign-in view follows a redirect from a network nobody controls, so the
-# thing it is pointed at must never be something that network chose. The panel
-# passes the fixed probe endpoint; these two checks are what stop that quietly
-# becoming a scraped Location header.
-grep -q 'omarchy-network-portal-signin", Model.captivePortalUrl' "$panel" ||
-  fail "the network panel opens the sign-in view at the fixed probe URL"
-pass "the network panel opens the sign-in view at the fixed probe URL"
-
-model_url=$(sed -n 's/^var captivePortalUrl = "\(.*\)"$/\1/p' "$model")
-signin_url=$(sed -n 's/^DEFAULT_URL = "\(.*\)"$/\1/p' "$signin")
-[[ -n $model_url && $model_url == "$signin_url" ]] ||
-  fail "the sign-in view's default URL tracks Model.js" "Model.js=$model_url signin=$signin_url"
-pass "the sign-in view's default URL tracks Model.js"
+# The entry point reads the live daemon; the panel supplies connection identity,
+# never a copied configuration file or a URL learned from the network.
+grep -q '"omarchy-network-portal-signin", "--ssid=" + ssid' "$panel" ||
+  fail "the network panel delegates discovery to the sign-in entry point"
+pass "the network panel delegates discovery to the sign-in entry point"
+grep -q '"--interface=" + (device ? device.name' "$panel" ||
+  fail "the sign-in view receives the portal interface"
+pass "the sign-in view receives the portal interface"
 
 # A URL reaching this command from anywhere but the panel still cannot be a
 # file:, javascript: or data: payload.
@@ -45,7 +39,7 @@ pass "the sign-in view preloads gtk-layer-shell"
 
 # The preload that makes it a layer surface is scrubbed before a browser is
 # started from it; a GTK browser inheriting libgtk-layer-shell is not a browser.
-grep -q 'env=browser_env())' "$signin" ||
+grep -q 'env=browser_env(), start_new_session=True)' "$signin" ||
   fail "Open in browser starts the browser without the layer-shell preload"
 pass "Open in browser starts the browser without the layer-shell preload"
 
@@ -66,7 +60,7 @@ pass "the sign-in view uses an ephemeral session"
 flag=portal-in-browser
 grep -q "\"omarchy-toggle-enabled\", \"$flag\"" "$signin" ||
   fail "the sign-in view honours the $flag toggle"
-grep -q 'os.execvp("omarchy-launch-browser", \["omarchy-launch-browser", "--new-window", BROWSER_URL\])' "$signin" ||
+grep -q '  launch_browser()' "$signin" ||
   fail "the $flag toggle falls back to the real browser"
 pass "the browser is one toggle away"
 
@@ -77,16 +71,14 @@ grep -q "\"action\":\"omarchy-toggle $flag\"" "$menu" ||
   fail "the network menu entry toggles the same flag it reports"
 pass "the toggle is in the network menu and reports its own state"
 
-# "Open in browser" hands the browser the fixed probe URL, never the page the
-# gateway redirected to; and the view never claims to be a phone.
-grep -q 'subprocess.Popen(\["omarchy-launch-browser", "--new-window", BROWSER_URL\],' "$signin" ||
-  fail "the browser button opens the fixed browser URL"
-pass "the browser button opens the fixed browser URL"
-# archlinux.org is HSTS-preloaded: a Chromium-family browser would rewrite the
-# probe URL to https and never meet the portal. The browser gets a host that is not.
-grep -q '^BROWSER_URL = "http://captive.apple.com/hotspot-detect.html"' "$signin" ||
-  fail "the browser URL is a plain-HTTP host that is not HSTS-preloaded"
-pass "the browser URL is not HSTS-preloaded"
+# The browser uses fresh local discovery configuration, never a redirect or
+# the rejected HTTPS URL. Its security policy remains the browser's own.
+grep -q 'subprocess.Popen(\["omarchy-launch-browser", "--new-window", discovery_url()\],' "$signin" ||
+  fail "the browser button resolves a fresh discovery URL"
+pass "the browser button resolves a fresh discovery URL"
+grep -q '^DEFAULT_URL = "http://neverssl.com/"' "$signin" ||
+  fail "the fallback discovery endpoint is HTTP-only"
+pass "the fallback discovery endpoint is HTTP-only"
 if grep -qi 'iphone\|Mobile/15' "$signin"; then fail "the sign-in view does not impersonate a phone"; fi
 grep -q 'set_user_agent_with_application_details("Omarchy"' "$signin" ||
   fail "the sign-in view names Omarchy in its user agent"
@@ -96,8 +88,9 @@ pass "the sign-in view's user agent is honest"
 # dismissed by clicks on the page) and closes when the panel closes.
 grep -q 'GtkLayerShell.Layer.OVERLAY' "$signin" || fail "the sign-in view stacks above the network panel"
 pass "the sign-in view stacks above the network panel"
-grep -q 'omarchy-keyboard-panel' "$signin" || fail "the sign-in view follows the panel that opened it"
-pass "the sign-in view follows the panel that opened it"
+grep -q 'portalProcess.running = false' "$panel" ||
+  fail "the sign-in process follows the originating network panel"
+pass "the sign-in process follows the originating network panel"
 
 python3 -u "$ROOT/test/shell.d/fixtures/network-portal-tls.py" "$signin" ||
   fail "portal TLS failures never authorize a certificate or downgrade HTTPS"
